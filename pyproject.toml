@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend= "setuptools.build_meta"
+
+[project]
+name = "chenLiu"
+version = "0.0.1"
+authors = [
+  { name="Piotr Żuchowski", email="piotr.zuchowski000@gmail.com" },
+]
+description = "Outlier detection procedure."
+requires-python = ">=3.10"
+dependencies = ['numpy==1.26.3', 'pandas==2.2.0', 'statsmodels==0.14.0']
+
