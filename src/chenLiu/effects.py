@@ -1,10 +1,9 @@
 import numpy as np
-
-from statsmodels.tsa.arima_process import arma2ma
+from . import arma2ma
 
 
 def io_effect(n, ind, ar, ma, w=1.0):
-    arr = arma2ma(ar, ma, n - ind - 1)
+    arr = arma2ma.arma2ma(ar, ma, n - ind - 1)
     arr = np.concatenate([np.zeros(ind), [1], arr])
     return arr * w
 

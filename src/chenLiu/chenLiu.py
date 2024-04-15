@@ -7,8 +7,10 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import logging as log
 
-import effects as eff
-from statsmodels.tsa.arima_process import arma2ma
+from . import effects as eff
+from . import arma2ma
+
+# from statsmodels.tsa.arima_process import arma2ma
 
 
 def calcx4(poly, delta) -> np.ndarray:
@@ -22,7 +24,6 @@ def calcx4(poly, delta) -> np.ndarray:
             sum += delta ** (k - j) * poly[j]   # - poly[k]
         arr[k] = dd - sum - poly[k]
 
-    # # chui wie które dobre
     # powers = np.power(delta, np.arange(1, n + 1))
     # print(powers)
     # cum0 = np.cumsum(poly)
@@ -35,7 +36,7 @@ def calcx4(poly, delta) -> np.ndarray:
 
 
 def calc_stats(delta: float, fit: tsa.ARIMAResults, n):
-    poly = arma2ma(fit.polynomial_ar, fit.polynomial_ma, n)
+    poly = arma2ma.arma2ma(fit.polynomial_ar, fit.polynomial_ma, n)
     poly = -poly
     poly[0] = 1
     sigma = 1.483 * fit.mae
@@ -223,13 +224,13 @@ def stage2(
         effects_df = DataFrame.from_records(matrix).transpose()
         effects_df.columns = report.index.values
 
-        fit_prawilny: tsa.ARIMAResults = tsa.ARIMA(
+        fit_corrected: tsa.ARIMAResults = tsa.ARIMA(
             y, order=order, exog=effects_df
         ).fit()
 
         data = {}
         for i in iter(effects_df.columns):
-            data[i] = fit_prawilny.params[i]
+            data[i] = fit_corrected.params[i]
 
         omega_std = np.array([data[i] for i in data]).std()
 
@@ -243,16 +244,20 @@ def stage2(
             report = report.drop(series.abs().idxmin())
 
         if len(report) <= 1 or (series.abs() > cval).all():
-            return report, remove_effects(y, fit_prawilny, report, delta)
+            return (
+                report,
+                remove_effects(y, fit_corrected, report, delta),
+                fit_corrected,
+            )
 
 
 def stage3(y: Series, order, cval: float, delta: float = 0.7):
     out1 = stage1(y, order, cval, delta, 1)
     if out1.empty:
         return None, None
-    out2, final_series = stage2(y, out1, cval, order, delta)
+    out2, final_series, fit = stage2(y, out1, cval, order, delta)
 
-    return out2, final_series
+    return out2, final_series, fit
 
 
 def chen_liu(y: Series, arima_order=(2, 0, 2), cval=2):
@@ -261,14 +266,39 @@ def chen_liu(y: Series, arima_order=(2, 0, 2), cval=2):
     stage1_output = stage1(y, arima_order, cval)
     if stage1_output.empty:
         return 1
-    stage2_output, series = stage2(y, stage1_output, cval, arima_order, delta)
-    fin_raport, fin_series = stage3(Series(y), arima_order, cval, delta)
+    log.warning(f'Found {len(stage1_output)} potential outliers')
+
+    stage2_output, series, _ = stage2(
+        y, stage1_output, cval, arima_order, delta
+    )
+    fin_raport, fin_series, fin_fit = stage3(
+        Series(y), arima_order, cval, delta
+    )
+
+    fin_effects = calculate_effect(fin_fit, fin_raport, delta, len(y))
 
     if fin_raport is None and fin_series is None:
         fin_raport = stage2_output
         fin_series = series
 
-    return fin_raport, fin_series
+    return fin_raport, fin_series, fin_effects, fin_fit
+
+
+# TODO: Maybe use async to make it usable for bigger sets
+# ERROR: arma2ma someting with correst indexing
+# def chen_liu_chunked(y: Series, arima_order=(2, 0, 2), cval=2, chunks=2):
+#     assert chunks >= 2
+#
+#     results = []
+#     for chunk in np.split(y, chunks):
+#         chunk = chunk.reset_index(drop=True)
+#         print(len(chunk))
+#         # results.append(chen_liu(chunk, arima_order, cval))
+#     arr = np.array(results)
+#
+#     print(arr)
+#     eff = [print(x) for _, _, x, _ in arr]
+#     return eff
 
 
 if __name__ == '__main__':
@@ -283,8 +313,8 @@ if __name__ == '__main__':
 
         if stage1_output.empty:
             return 1
-        stage2_output, series = stage2(y, stage1_output, cval, order, delta)
-        raport, out = stage3(Series(y), order, cval, delta)
+        stage2_output, series, _ = stage2(y, stage1_output, cval, order, delta)
+        raport, out, fin_fit = stage3(Series(y), order, cval, delta)
 
         if raport is None and out is None:
             raport = stage2_output
