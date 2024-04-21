@@ -92,7 +92,7 @@ def calc_stats(delta: float, fit: tsa.ARIMAResults, n):
 
 
 def effects_matrix(fit: tsa.ARIMAResults, df: DataFrame, delta: float, n: int):
-    array = []
+    data = {}
     for i, row in df.iterrows():
         s = []
         w = float(row['omega'])
@@ -107,8 +107,8 @@ def effects_matrix(fit: tsa.ARIMAResults, df: DataFrame, delta: float, n: int):
                 s = eff.tc_effect(n, i, w, delta)
             case _:
                 log.warning(f'cannot recognize type {row["type"]}. Ignoring')
-        array.append(s)
-    return array
+        data[i] = s
+    return DataFrame(data)
 
 
 def calculate_effect(
@@ -137,7 +137,7 @@ def remove_effects(
     y: Series, fit: tsa.ARIMAResults, df: DataFrame, delta: float
 ):
     newseries = np.copy(y)
-    effect = calculate_effect(fit, df, delta, len(y))
+    effect = calculate_effect(fit, df, delta, y.size)
     return Series(newseries - effect)
 
 
@@ -177,9 +177,10 @@ def stage1(
     cval: float = 2.0,
     delta: float = 0.7,
     iter: int = 2,
+    fixed_fit=False,
 ):
 
-    n = len(y)
+    n = y.size
     series = y.copy()
     out = pd.DataFrame(
         columns=[
@@ -189,9 +190,8 @@ def stage1(
         ]
     )
 
+    fit: tsa.ARIMAResults = tsa.ARIMA(series, order=order).fit()
     for _ in range(iter):
-        log.warning(series)
-        fit: tsa.ARIMAResults = tsa.ARIMA(series, order=order).fit()
         df_tau, df_om = calc_stats(delta, fit, n)
         tau_om = pd.concat([df_tau, df_om], axis=1)
 
@@ -207,55 +207,47 @@ def stage1(
             return out
 
         series = remove_effects(series, fit, raport, delta)
+        if not fixed_fit:
+            fit: tsa.ARIMAResults = tsa.ARIMA(series, order=order).fit()
 
-    return out
+    return out, fit
 
 
 def stage2(
-    y: Series, stage1_report: DataFrame, cval: float, order, delta: float
+    y: Series,
+    stage1_report: DataFrame,
+    cval: float,
+    order,
+    delta: float,
+    fit: tsa.ARIMAResults,
 ):
-
-    report = stage1_report
-    fit: tsa.ARIMAResults = tsa.ARIMA(y, order=order).fit()
-
+    eff = effects_matrix(fit, stage1_report, delta, len(y))
+    stage2_outliers = stage1_report
     while True:
-        matrix = effects_matrix(fit, report, delta, len(y))
+        resid = fit.resid
+        result = sm.OLS(resid, eff).fit()
+        tau = result.params / np.std(result.params)
+        if tau[tau.abs() < cval].any():
+            eff = eff.drop(columns=tau.abs().idxmin())
+            stage2_outliers = stage2_outliers.drop(tau.abs().idxmin())
+        else:
+            corrected_series = remove_effects(y, fit, stage2_outliers, delta)
+            fit = tsa.ARIMA(y, order=order).fit()
 
-        effects_df = DataFrame.from_records(matrix).transpose()
-        effects_df.columns = report.index.values
-
-        fit_corrected: tsa.ARIMAResults = tsa.ARIMA(
-            y, order=order, exog=effects_df
-        ).fit()
-
-        data = {}
-        for i in iter(effects_df.columns):
-            data[i] = fit_corrected.params[i]
-
-        omega_std = np.array([data[i] for i in data]).std()
-
-        for k, v in data.items():
-            data[k] = v / omega_std
-
-        series = Series(data)
-
-        log.warning(series)
-        if series[series.abs() < cval].any():
-            report = report.drop(series.abs().idxmin())
-
-        if len(report) <= 1 or (series.abs() > cval).all():
             return (
-                report,
-                remove_effects(y, fit_corrected, report, delta),
-                fit_corrected,
+                stage2_outliers,
+                corrected_series,
+                fit,
             )
 
 
-def stage3(y: Series, order, cval: float, delta: float = 0.7):
-    out1 = stage1(y, order, cval, delta, 1)
+def stage3(
+    y: Series, order, cval: float, fit: tsa.ARIMAResults, delta: float = 0.7
+):
+    out1, f1 = stage1(y, order, cval, delta, 1, True)
     if out1.empty:
         return None, None
-    out2, final_series, fit = stage2(y, out1, cval, order, delta)
+    out2, final_series, fit = stage2(y, out1, cval, order, delta, f1)
 
     return out2, final_series, fit
 
@@ -263,69 +255,77 @@ def stage3(y: Series, order, cval: float, delta: float = 0.7):
 def chen_liu(y: Series, arima_order=(2, 0, 2), cval=2):
     delta = 0.7
 
-    stage1_output = stage1(y, arima_order, cval)
+    stage1_output, fit = stage1(y, arima_order, cval)
     if stage1_output.empty:
+        log.warning('After stage1: Did not found any outlier')
         return 1
-    log.warning(f'Found {len(stage1_output)} potential outliers')
-
-    stage2_output, series, _ = stage2(
-        y, stage1_output, cval, arima_order, delta
+    (stage2_outliers, corrected_series, fit) = stage2(
+        y, stage1_output, cval, arima_order, delta, fit
     )
-    fin_raport, fin_series, fin_fit = stage3(
-        Series(y), arima_order, cval, delta
+    if stage2_outliers.empty:
+        log.warning('After stage2: Did not found any outlier')
+        return 2
+
+    stage3_outliers, out, fin_fit = stage3(
+        Series(y), arima_order, cval, fit, delta
     )
 
-    fin_effects = calculate_effect(fin_fit, fin_raport, delta, len(y))
+    fin_effects = calculate_effect(fin_fit, stage3_outliers, delta, len(y))
 
-    if fin_raport is None and fin_series is None:
-        fin_raport = stage2_output
-        fin_series = series
-
-    return fin_raport, fin_series, fin_effects, fin_fit
+    return stage3_outliers, out, fin_effects, fin_fit
 
 
 # TODO: Maybe use async to make it usable for bigger sets
-# ERROR: arma2ma someting with correst indexing
 # def chen_liu_chunked(y: Series, arima_order=(2, 0, 2), cval=2, chunks=2):
 #     assert chunks >= 2
 #
-#     results = []
+#     eff_out = np.array([])
+#     series_out = np.array([])
+#     raport_out = DataFrame()
+#     fit = None
 #     for chunk in np.split(y, chunks):
 #         chunk = chunk.reset_index(drop=True)
 #         print(len(chunk))
-#         # results.append(chen_liu(chunk, arima_order, cval))
-#     arr = np.array(results)
+#         print(chunk)
+#         out, ser, eff, fit = chen_liu(chunk, arima_order, cval)
 #
-#     print(arr)
-#     eff = [print(x) for _, _, x, _ in arr]
-#     return eff
+#         raport_out = raport_out._append(out)
+#         series_out = series_out.concatenate(ser, ignore_index=True)
+#         eff_out = series_out.append(eff, ignore_index=True)
+#
+#     return raport_out, series_out, eff_out, fit
+# print(results)
 
 
-if __name__ == '__main__':
-
-    def main():
-        y = sm.datasets.nile.data.load_pandas().data['volume']
-        cval = 1.9
-        order = (2, 0, 2)
-        delta = 0.7
-
-        stage1_output = stage1(y, order, cval)
-
-        if stage1_output.empty:
-            return 1
-        stage2_output, series, _ = stage2(y, stage1_output, cval, order, delta)
-        raport, out, fin_fit = stage3(Series(y), order, cval, delta)
-
-        if raport is None and out is None:
-            raport = stage2_output
-            out = series
-
-        print(raport)
-
-        plt.plot(y)
-        plt.plot(out)
-        plt.show()
-
-        return 0
-
-    main()
+# if __name__ == '__main__':
+#
+#     def main():
+#         y = sm.datasets.nile.data.load_pandas().data['volume']
+#         cval = 2.0
+#         order = (1, 0, 1)
+#         delta = 0.7
+#
+#         stage1_output, fit = stage1(y, order, cval)
+#         if stage1_output.empty:
+#             log.warning('After stage1: Did not found any outlier')
+#             return 1
+#         (stage2_outliers, corrected_series, fit) = stage2(
+#             y, stage1_output, cval, order, delta, fit
+#         )
+#         if stage2_outliers.empty:
+#             log.warning('After stage2: Did not found any outlier')
+#             return 2
+#
+#         stage2_outliers, out, fin_fit = stage3(
+#             Series(y), order, cval, fit, delta
+#         )
+#
+#         print(stage2_outliers)
+#
+#         plt.plot(y)
+#         plt.plot(out)
+#         plt.show()
+#
+#         return 0
+#
+#     main()
