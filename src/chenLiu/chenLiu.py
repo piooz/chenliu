@@ -253,6 +253,7 @@ def stage3(
 
 
 def chen_liu(y: Series, arima_order=(2, 0, 2), cval=2):
+    y = y.reset_index(drop=True)
     delta = 0.7
 
     stage1_output, fit = stage1(y, arima_order, cval)
