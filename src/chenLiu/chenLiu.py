@@ -204,7 +204,7 @@ def stage1(
 
         if out.empty:
             log.error('Not found any potential outlier...')
-            return out
+            return out, None
 
         series = remove_effects(series, fit, raport, delta)
         if not fixed_fit:
@@ -252,7 +252,9 @@ def stage3(
     return out2, final_series, fit
 
 
-def chen_liu(y: Series, arima_order=(2, 0, 2), cval=2):
+def chen_liu(y: Series | list, arima_order=(2, 0, 2), cval=2):
+    if isinstance(y, list):
+        y = Series(y)
     y = y.reset_index(drop=True)
     delta = 0.7
 
