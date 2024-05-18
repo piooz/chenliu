@@ -246,7 +246,7 @@ def stage3(
 ):
     out1, f1 = stage1(y, order, cval, delta, 1, True)
     if out1.empty:
-        return None, None
+        return None, None, None
     out2, final_series, fit = stage2(y, out1, cval, order, delta, f1)
 
     return out2, final_series, fit
@@ -261,13 +261,13 @@ def chen_liu(y: Series | list, arima_order=(2, 0, 2), cval=2):
     stage1_output, fit = stage1(y, arima_order, cval)
     if stage1_output.empty:
         log.warning('After stage1: Did not found any outlier')
-        return 1
+        return None, None, None, None
     (stage2_outliers, corrected_series, fit) = stage2(
         y, stage1_output, cval, arima_order, delta, fit
     )
     if stage2_outliers.empty:
         log.warning('After stage2: Did not found any outlier')
-        return 2
+        return None, None, None, None
 
     stage3_outliers, out, fin_fit = stage3(
         Series(y), arima_order, cval, fit, delta
