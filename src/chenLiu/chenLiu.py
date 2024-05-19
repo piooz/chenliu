@@ -252,7 +252,7 @@ def stage3(
     return out2, final_series, fit
 
 
-def chen_liu(y: Series | list, arima_order=(2, 0, 2), cval=2):
+def chen_liu(y: Series | list, arima_order=(2, 0, 2), cval=2.0):
     if isinstance(y, list):
         y = Series(y)
     y = y.reset_index(drop=True)
